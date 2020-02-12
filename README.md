@@ -3,6 +3,15 @@
 Speech Translation Prototype using python, Google Speech Recognition API and
 Google Translation API
 
+## Why?
+Since I am only still an N5 level Japanese speaker, it is difficult to 
+understand what goes on during meetings in the Japanese company I work for. 
+So I thought I would use my free time to build a Japanese Speech to English 
+Text script which would help me catch phrases I don’t understand at my 
+current language proficiency. And of course, not only is machine translation 
+an interesting field, I thrive on using company resources for the greater good. 
+Lol (or Japanese: WW)
+
 ## Installation
 
 Using pip: 
