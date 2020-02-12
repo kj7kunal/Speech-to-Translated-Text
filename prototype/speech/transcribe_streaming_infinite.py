@@ -1,23 +1,10 @@
-#!/usr/bin/env python
+"""Application for transcribing and translating
+    recorded Japanese speech to English
+Author: Kunal Jain
 
-# Copyright 2019 Google LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#      http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+NOTE: This module requires the dependency `pyaudio`,
+     `google-cloud-translate`, `google-cloud-speech`
 
-"""Application for transcribing and translating recorded Japanese speech to English
-Author: Kunal Jain:
-
-NOTE: This module requires the dependency `pyaudio`, `google-cloud-translate`, `google-cloud-speech`
 To install using pip:
 
     pip install -r requirements.txt
@@ -26,13 +13,10 @@ Example usage:
     python transcribe_streaming_infinite.py
 """
 
-# [START speech_transcribe_infinite_streaming]
-
 import time
 import re
 import sys
 
-# uses result_end_time currently only avaialble in v1p1beta, will be in v1 soon
 from google.cloud import speech_v1 as speech
 from google.cloud import translate_v2 as translate
 from google.api_core.exceptions import DeadlineExceeded
@@ -117,20 +101,30 @@ class ResumableMicrophoneStream:
             data = []
 
             if self.new_stream and self.last_audio_input:
+                # if this is the first audio from a new request
+                # calculate amount of unfinalized [RED] audio from last request
+                # resend the audio to the speech client before incoming audio
+                # for continuation in speech
+                # main bottleneck (unclear speech difficult to finalize)
 
                 chunk_time = STREAMING_LIMIT / len(self.last_audio_input)
 
                 if chunk_time != 0:
+                    # last_audio_input > STREAMING_LIMIT => unfinalized ignored
 
                     if self.bridging_offset < 0:
+                        # bridging Offset accounts for time of resent audio
+                        # calculated from last request
                         self.bridging_offset = 0
 
                     if self.bridging_offset > self.final_request_end_time:
                         self.bridging_offset = self.final_request_end_time
 
+                    # chunks from MS is number of chunks to resend
                     chunks_from_ms = round((self.final_request_end_time -
                                             self.bridging_offset) / chunk_time)
 
+                    # set bridging offset for the next request
                     self.bridging_offset = (round((
                         len(self.last_audio_input) - chunks_from_ms)
                                                   * chunk_time))
@@ -149,6 +143,7 @@ class ResumableMicrophoneStream:
             if chunk is None:
                 return
             data.append(chunk)
+
             # Now consume whatever other data's still buffered.
             while True:
                 try:
@@ -157,6 +152,7 @@ class ResumableMicrophoneStream:
                     if chunk is None:
                         return
                     data.append(chunk)
+
                     self.audio_input.append(chunk)
 
                 except queue.Empty:
@@ -175,6 +171,10 @@ def listen_print_loop(responses, translate_client, stream):
     multiple alternatives; for details, see https://goo.gl/tjCPAU.  Here we
     print only the transcription for the top alternative of the top result.
 
+    No result may exist if speech could not be recognized. Unrecognized speech
+    is commonly the result of very poor-quality audio, or from language code,
+    encoding, or sample rate values that do not match the supplied audio.
+
     In this case, responses are provided for interim results as well. If the
     response is an interim one, print a line feed at the end of it, to allow
     the next result to overwrite it, until the response is a final one. For the
@@ -184,23 +184,29 @@ def listen_print_loop(responses, translate_client, stream):
     all_transcripts = []
     all_final_transcripts = []
 
-
     for response in responses:
 
         if get_current_time() - stream.start_time > STREAMING_LIMIT:
             stream.start_time = get_current_time()
             break
 
+        # look for results in other responses
         if not response.results:
             continue
 
+        # The `results` list is consecutive. For streaming, we only care about
+        # the first result being considered, since once it's `is_final`, it
+        # moves on to considering the next utterance.
         result = response.results[0]
 
+        # check next response if possible transcriptions don't exist
         if not result.alternatives:
             continue
 
+        # choose the highest confidence transcript from alternatives
         transcript = result.alternatives[0].transcript
 
+        # get translation of transcript
         translated = translate_client.translate(transcript, source_language="ja")
 
         result_seconds = 0
@@ -212,34 +218,26 @@ def listen_print_loop(responses, translate_client, stream):
         if result.result_end_time.nanos:
             result_nanos = result.result_end_time.nanos
 
+        # get result_end_time in ms for corrected time stamp
         stream.result_end_time = int((result_seconds * 1000)
                                      + (result_nanos / 1000000))
 
         corrected_time = (stream.result_end_time - stream.bridging_offset
                           + (STREAMING_LIMIT * stream.restart_counter))
-        # Display interim results, but with a carriage return at the end of the
-        # line, so subsequent lines will overwrite them.
 
         if result.is_final:
-
-            # sys.stdout.write(GREEN)
-            # sys.stdout.write('\033[K')
-            # sys.stdout.write(str(corrected_time) + ': ' + translated['input'] + '\n' + translated['translatedText'] + '\n')
-
+            # High confidence transcription from model
             stream.is_final_end_time = stream.result_end_time
             stream.last_transcript_was_final = True
-
-            all_final_transcripts.append(str(corrected_time) + ': ' + translated['input'] + '\n' + translated['translatedText'] + '\n')
-            
-
+            all_final_transcripts.append(str(corrected_time) + ': ' +
+                                         translated['input'] + '\n' +
+                                         translated['translatedText'] + '\n')
         else:
-            # sys.stdout.write(RED)
-            # sys.stdout.write('\033[K')
-            # sys.stdout.write(str(corrected_time) + ': ' + translated['input'] + '\n' + translated['translatedText'] + '\n')
-
+            # Low confidence transcription from model
             stream.last_transcript_was_final = False
-
-            all_transcripts.append(str(corrected_time) + ': ' + translated['input'] + '\n' + translated['translatedText'] + '\n')
+            all_transcripts.append(str(corrected_time) + ': ' +
+                                   translated['input'] + '\n' +
+                                   translated['translatedText'] + '\n')
 
     if all_final_transcripts:
         # print all_final_transcripts[-1] with GREEN
@@ -253,17 +251,21 @@ def listen_print_loop(responses, translate_client, stream):
         all_transcripts = []
 
 
-
 def audio_saver(data, sampw, num):
-    waveFile = wave.open('./recordings/record_'+time.strftime("%Y%m%d-%H%M%S")+'_'+num+'.wav', 'wb')
+    """Saves the recorded stream into wav files"""
+
+    waveFile = wave.open('./recordings/record_' +
+                         time.strftime("%Y%m%d-%H%M%S")+'_'+num+'.wav', 'wb')
     waveFile.setnchannels(1)
     waveFile.setsampwidth(sampw)
     waveFile.setframerate(16000)
     waveFile.writeframes(b''.join(data))
     waveFile.close()
 
+
 def main():
     """start bidirectional streaming from microphone input to speech API"""
+
     program_run_time = time.time()
 
     speech_client = speech.SpeechClient()
@@ -280,7 +282,7 @@ def main():
         interim_results=True)
 
     mic_manager = ResumableMicrophoneStream(SAMPLE_RATE, CHUNK_SIZE)
-    print(mic_manager.chunk_size)
+
     sys.stdout.write(YELLOW)
     sys.stdout.write('\nListening, say "Quit" or "Exit" to stop.\n\n')
     sys.stdout.write('End (ms)       Transcript Results/Status\n')
@@ -292,17 +294,28 @@ def main():
             sys.stdout.write(YELLOW)
             sys.stdout.write('\n' + str(
                 STREAMING_LIMIT * stream.restart_counter) + ': NEW REQUEST\n')
-            audio_saver(stream.last_audio_input, stream._audio_interface.get_sample_size(pyaudio.paInt16), str(STREAMING_LIMIT * stream.restart_counter))
+
+            # Save the last processed audio input
+            if stream.last_audio_input:
+                audio_saver(stream.last_audio_input,
+                            stream._audio_interface.get_sample_size(pyaudio.paInt16),
+                            str(STREAMING_LIMIT * stream.restart_counter))
+
+            # Initialize current input data to be processed
             stream.audio_input = []
+
+            # Call generator method to get current audio buffer data
             audio_generator = stream.generator()
 
+            # Create requests structure from captured streams
             requests = (speech.types.StreamingRecognizeRequest(
                 audio_content=content)for content in audio_generator)
 
+            # Get responses from Streaming Recognition client
             responses = speech_client.streaming_recognize(streaming_config,
-                                                   requests)
+                                                          requests)
 
-            # Now, put the transcription responses to use.
+            # Now, get the transcript and translation from responses
             try:
                 listen_print_loop(responses, translate_client, stream)
             except DeadlineExceeded:
@@ -312,7 +325,7 @@ def main():
                 stream.__exit__()
                 break
 
-
+            # Reset stream for next iteration
             if stream.result_end_time > 0:
                 stream.final_request_end_time = stream.is_final_end_time
             stream.result_end_time = 0
@@ -324,11 +337,10 @@ def main():
             if not stream.last_transcript_was_final:
                 sys.stdout.write('\n')
             stream.new_stream = True
-    
-    sys.stdout.write(str(time.time()-program_run_time))
+
+    sys.stdout.write("STTT used for: " + str(time.time()-program_run_time) +
+                     'seconds \n')
 
 
 if __name__ == '__main__':
     main()
-    
-# [END speech_transcribe_infinite_streaming]
